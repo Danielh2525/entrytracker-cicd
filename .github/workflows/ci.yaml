@@ -130,5 +130,18 @@ jobs:
 
                 docker image prune -f
 
-                curl -f http://localhost:5000
+                for i in {1..10}; do
+                  if curl -f http://localhost:5000; then
+                    echo "Deployment verification passed"
+                    exit 0
+                  fi
+
+                  echo "Waiting for app to become ready..."
+                  docker ps
+                  sleep 5
+                done
+
+                echo "Deployment verification failed"
+                docker compose -f docker-compose.prod.yaml logs
+                exit 1
           EOF
