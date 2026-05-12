@@ -2,6 +2,7 @@ version: '3.8'
 
 services:
   web:
+    image: entrytracker:latest
     build: .
     container_name: flask-app
     environment:
@@ -23,8 +24,6 @@ services:
     environment:
       - MYSQL_ROOT_PASSWORD=${DB_PASSWORD}
       - MYSQL_DATABASE=${DB_NAME}
-    ports:
-      - "3306:3306"
     networks:
       - app_network
     volumes:

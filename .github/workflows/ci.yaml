@@ -53,6 +53,10 @@ jobs:
         run: |
           curl -f http://127.0.0.1:5000
 
+      - name: Stop standalone Flask application
+        run: |
+          kill $(cat flask.pid)
+
       - name: Build Docker image
         run: |
           docker build -t entrytracker:latest .
@@ -60,3 +64,27 @@ jobs:
       - name: Verify Docker image was created
         run: |
           docker images | grep entrytracker
+
+      - name: Run E2E environment with Docker Compose
+        run: |
+          docker compose up -d
+
+      - name: Test E2E environment with curl
+        run: |
+          for i in {1..10}; do
+            if curl -f http://127.0.0.1:5000; then
+              echo "E2E test passed"
+              exit 0
+            fi
+            echo "Waiting for E2E app..."
+            sleep 5
+          done
+
+          echo "E2E test failed"
+          docker compose logs
+          exit 1
+
+      - name: Shut down E2E environment
+        if: always()
+        run: |
+          docker compose down
