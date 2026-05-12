@@ -1,4 +1,4 @@
-name: EntryTracker CI  
+name: EntryTracker CI
 
 on:
   push:
@@ -52,3 +52,11 @@ jobs:
       - name: Verify application is running
         run: |
           curl -f http://127.0.0.1:5000
+
+      - name: Build Docker image
+        run: |
+          docker build -t entrytracker:latest .
+
+      - name: Verify Docker image was created
+        run: |
+          docker images | grep entrytracker
