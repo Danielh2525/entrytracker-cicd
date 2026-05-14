@@ -116,6 +116,16 @@ jobs:
 
           ssh -o StrictHostKeyChecking=no \
               -i ~/.ssh/entrytracker_key \
+              ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} \
+              "mkdir -p ${{ secrets.EC2_APP_DIR }}"
+
+          scp -o StrictHostKeyChecking=no \
+              -i ~/.ssh/entrytracker_key \
+              docker-compose.prod.yaml \
+              ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:${{ secrets.EC2_APP_DIR }}/docker-compose.prod.yaml
+
+          ssh -o StrictHostKeyChecking=no \
+              -i ~/.ssh/entrytracker_key \
               ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
                 set -e
 
