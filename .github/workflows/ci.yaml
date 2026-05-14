@@ -9,8 +9,43 @@ permissions:
   contents: write
 
 jobs:
-  build-and-run:
+  version:
     runs-on: ubuntu-latest
+
+    outputs:
+      image_tag: ${{ steps.version.outputs.image_tag }}
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calculate next version
+        id: version
+        run: |
+          git fetch --tags
+
+          LATEST_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
+
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="v0.0.0"
+          fi
+
+          VERSION="${LATEST_TAG#v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          PATCH=$((PATCH + 1))
+          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+
+          echo "Latest version: $LATEST_TAG"
+          echo "New version: $NEW_TAG"
+
+          echo "image_tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
+
+  standalone-test:
+    runs-on: ubuntu-latest
+    needs: version
 
     services:
       mysql:
@@ -35,31 +70,6 @@ jobs:
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Calculate next version
-        id: version
-        run: |
-          git fetch --tags
-
-          LATEST_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
-
-          if [ -z "$LATEST_TAG" ]; then
-            LATEST_TAG="v0.0.0"
-          fi
-
-          VERSION="${LATEST_TAG#v}"
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
-
-          PATCH=$((PATCH + 1))
-
-          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
-
-          echo "Latest version: $LATEST_TAG"
-          echo "New version: $NEW_TAG"
-
-          echo "image_tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -71,36 +81,53 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Start Flask application in background
+      - name: Start standalone Flask application
         run: |
           python app.py > app.log 2>&1 &
           echo $! > flask.pid
-          sleep 10
 
-      - name: Verify application is running
+      - name: Test standalone application with curl
         run: |
-          curl -f http://127.0.0.1:5000
+          for i in {1..10}; do
+            if curl -f http://127.0.0.1:5000; then
+              echo "Standalone test passed"
+              exit 0
+            fi
+            echo "Waiting for standalone app..."
+            sleep 3
+          done
 
-      - name: Stop standalone Flask application
-        run: |
-          kill $(cat flask.pid)
+          echo "Standalone test failed"
+          cat app.log
+          exit 1
+
+  docker-e2e:
+    runs-on: ubuntu-latest
+    needs: version
+
+    env:
+      IMAGE_TAG: ${{ needs.version.outputs.image_tag }}
+      DB_HOST: mysql
+      DB_USER: root
+      DB_PASSWORD: root
+      DB_NAME: entrytracker
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
 
       - name: Build Docker image
         run: |
           docker build \
-            -t entrytracker:${{ steps.version.outputs.image_tag }} \
+            -t entrytracker:${IMAGE_TAG} \
             -t entrytracker:latest \
             .
 
-      - name: Verify Docker image was created
-        run: |
-          docker images | grep entrytracker
-
       - name: Run E2E environment with Docker Compose
         run: |
-          IMAGE_TAG=${{ steps.version.outputs.image_tag }}  docker compose up -d
+          IMAGE_TAG=${IMAGE_TAG} docker compose up -d
 
-      - name: Test E2E environment with curl
+      - name: Test E2E environment through Nginx
         run: |
           for i in {1..10}; do
             if curl -f http://127.0.0.1; then
@@ -118,7 +145,34 @@ jobs:
       - name: Shut down E2E environment
         if: always()
         run: |
-          IMAGE_TAG=${{ steps.version.outputs.image_tag }} docker compose down
+          IMAGE_TAG=${IMAGE_TAG} docker compose down
+
+      - name: Save Docker image artifact
+        run: |
+          docker save entrytracker:${IMAGE_TAG} -o entrytracker-image.tar
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: entrytracker-image
+          path: entrytracker-image.tar
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: [version, standalone-test, docker-e2e]
+
+    env:
+      IMAGE_TAG: ${{ needs.version.outputs.image_tag }}
+
+    steps:
+      - name: Download Docker image artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: entrytracker-image
+
+      - name: Load Docker image
+        run: |
+          docker load -i entrytracker-image.tar
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
@@ -134,17 +188,28 @@ jobs:
         run: |
           ECR_IMAGE=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}
 
-          docker tag entrytracker:${{ steps.version.outputs.image_tag }} $ECR_IMAGE:${{ steps.version.outputs.image_tag }}
-          docker tag entrytracker:${{ steps.version.outputs.image_tag }} $ECR_IMAGE:latest
+          docker tag entrytracker:${IMAGE_TAG} $ECR_IMAGE:${IMAGE_TAG}
+          docker tag entrytracker:${IMAGE_TAG} $ECR_IMAGE:latest
 
       - name: Push Docker image to ECR
         run: |
           ECR_IMAGE=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}
 
-          docker push $ECR_IMAGE:${{ steps.version.outputs.image_tag }}
+          docker push $ECR_IMAGE:${IMAGE_TAG}
           docker push $ECR_IMAGE:latest
 
-      - name: Deploy to EC2
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [version, publish]
+
+    env:
+      IMAGE_TAG: ${{ needs.version.outputs.image_tag }}
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Deploy to EC2 staging
         run: |
           mkdir -p ~/.ssh
 
@@ -164,12 +229,12 @@ jobs:
 
           ssh -o StrictHostKeyChecking=no \
               -i ~/.ssh/entrytracker_key \
-              ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'EOF'
+              ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << EOF
                 set -e
 
                 cd ${{ secrets.EC2_APP_DIR }}
 
-                export IMAGE_TAG="${{ steps.version.outputs.image_tag }}"
+                export IMAGE_TAG="${IMAGE_TAG}"
 
                 aws ecr get-login-password --region ${{ secrets.AWS_REGION }} \
                   | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
@@ -178,9 +243,7 @@ jobs:
 
                 docker compose -f docker-compose.prod.yaml up -d --force-recreate web nginx
 
-
                 DEPLOY_OK=false
-
 
                 for i in {1..10}; do
                   if curl -f http://localhost; then
@@ -194,7 +257,7 @@ jobs:
                   sleep 5
                 done
 
-                if [ "$DEPLOY_OK" = "false" ]; then
+                if [ "\$DEPLOY_OK" = "false" ]; then
                   echo "Deployment verification failed"
                   docker compose -f docker-compose.prod.yaml logs
                   exit 1
@@ -205,10 +268,19 @@ jobs:
                 echo "Deploy script finished successfully"
           EOF
 
+  git-tag:
+    runs-on: ubuntu-latest
+    needs: [version, deploy]
+
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Create and push Git version tag
-        if: github.ref == 'refs/heads/main'
         run: |
-          VERSION=${{ steps.version.outputs.image_tag }}
+          VERSION=${{ needs.version.outputs.image_tag }}
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
