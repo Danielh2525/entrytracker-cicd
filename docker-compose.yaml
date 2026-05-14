@@ -1,17 +1,29 @@
 version: '3.8'
 
 services:
+  nginx:
+    image: nginx:alpine
+    container_name: nginx-proxy
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - web
+    networks:
+      - app_network
+
   web:
     image: entrytracker:latest
     build: .
     container_name: flask-app
     environment:
-      - DB_HOST=${DB_HOST}    # change this when replacing MySQL contianer with another database
-      - DB_USER=${DB_USER}    # change this when replacing MySQL contianer with another database
+      - DB_HOST=${DB_HOST}
+      - DB_USER=${DB_USER}
       - DB_PASSWORD=${DB_PASSWORD}
       - DB_NAME=${DB_NAME}
-    ports:
-      - "5000:5000"
+    expose:
+      - "5000"
     depends_on:
       mysql:
         condition: service_healthy

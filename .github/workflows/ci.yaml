@@ -72,7 +72,7 @@ jobs:
       - name: Test E2E environment with curl
         run: |
           for i in {1..10}; do
-            if curl -f http://127.0.0.1:5000; then
+            if curl -f http://127.0.0.1; then
               echo "E2E test passed"
               exit 0
             fi
@@ -122,7 +122,8 @@ jobs:
           scp -o StrictHostKeyChecking=no \
               -i ~/.ssh/entrytracker_key \
               docker-compose.prod.yaml \
-              ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:${{ secrets.EC2_APP_DIR }}/docker-compose.prod.yaml
+              nginx.conf \
+              ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:${{ secrets.EC2_APP_DIR }}/
 
           ssh -o StrictHostKeyChecking=no \
               -i ~/.ssh/entrytracker_key \
@@ -136,14 +137,14 @@ jobs:
 
                 docker compose -f docker-compose.prod.yaml pull web
 
-                docker compose -f docker-compose.prod.yaml up -d --no-deps --force-recreate web
+                docker compose -f docker-compose.prod.yaml up -d --force-recreate web nginx
 
-                docker image prune -f
 
                 DEPLOY_OK=false
 
+
                 for i in {1..10}; do
-                  if curl -f http://localhost:5000; then
+                  if curl -f http://localhost; then
                     echo "Deployment verification passed"
                     DEPLOY_OK=true
                     break
@@ -159,6 +160,8 @@ jobs:
                   docker compose -f docker-compose.prod.yaml logs
                   exit 1
                 fi
+
+                docker image prune -f
 
                 echo "Deploy script finished successfully"
           EOF
