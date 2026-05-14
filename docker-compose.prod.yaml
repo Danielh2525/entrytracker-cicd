@@ -12,7 +12,7 @@ services:
       - app_network
 
   web:
-    image: 571673065356.dkr.ecr.ap-south-1.amazonaws.com/entrytracker:latest
+    image: 571673065356.dkr.ecr.ap-south-1.amazonaws.com/entrytracker:${IMAGE_TAG:-latest}
     container_name: flask-app
     environment:
       - DB_HOST=${DB_HOST}

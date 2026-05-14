@@ -14,7 +14,7 @@ services:
       - app_network
 
   web:
-    image: entrytracker:latest
+    image: entrytracker:${IMAGE_TAG:-latest}
     build: .
     container_name: flask-app
     environment:

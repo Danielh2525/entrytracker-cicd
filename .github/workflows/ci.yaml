@@ -5,6 +5,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: write
+
 jobs:
   build-and-run:
     runs-on: ubuntu-latest
@@ -32,6 +35,31 @@ jobs:
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Calculate next version
+        id: version
+        run: |
+          git fetch --tags
+
+          LATEST_TAG=$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -n 1)
+
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="v0.0.0"
+          fi
+
+          VERSION="${LATEST_TAG#v}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+
+          PATCH=$((PATCH + 1))
+
+          NEW_TAG="v${MAJOR}.${MINOR}.${PATCH}"
+
+          echo "Latest version: $LATEST_TAG"
+          echo "New version: $NEW_TAG"
+
+          echo "image_tag=$NEW_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -59,7 +87,10 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build -t entrytracker:latest .
+          docker build \
+            -t entrytracker:${{ steps.version.outputs.image_tag }} \
+            -t entrytracker:latest \
+            .
 
       - name: Verify Docker image was created
         run: |
@@ -67,7 +98,7 @@ jobs:
 
       - name: Run E2E environment with Docker Compose
         run: |
-          docker compose up -d
+          IMAGE_TAG=${{ steps.version.outputs.image_tag }}  docker compose up -d
 
       - name: Test E2E environment with curl
         run: |
@@ -87,7 +118,7 @@ jobs:
       - name: Shut down E2E environment
         if: always()
         run: |
-          docker compose down
+          IMAGE_TAG=${{ steps.version.outputs.image_tag }} docker compose down
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v5
@@ -101,11 +132,17 @@ jobs:
 
       - name: Tag Docker image for ECR
         run: |
-          docker tag entrytracker:latest ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:latest
+          ECR_IMAGE=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}
+
+          docker tag entrytracker:${{ steps.version.outputs.image_tag }} $ECR_IMAGE:${{ steps.version.outputs.image_tag }}
+          docker tag entrytracker:${{ steps.version.outputs.image_tag }} $ECR_IMAGE:latest
 
       - name: Push Docker image to ECR
         run: |
-          docker push ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}:latest
+          ECR_IMAGE=${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${{ secrets.ECR_REPOSITORY }}
+
+          docker push $ECR_IMAGE:${{ steps.version.outputs.image_tag }}
+          docker push $ECR_IMAGE:latest
 
       - name: Deploy to EC2
         run: |
@@ -131,6 +168,8 @@ jobs:
                 set -e
 
                 cd ${{ secrets.EC2_APP_DIR }}
+
+                export IMAGE_TAG="${{ steps.version.outputs.image_tag }}"
 
                 aws ecr get-login-password --region ${{ secrets.AWS_REGION }} \
                   | docker login --username AWS --password-stdin ${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
@@ -165,3 +204,18 @@ jobs:
 
                 echo "Deploy script finished successfully"
           EOF
+
+      - name: Create and push Git version tag
+        if: github.ref == 'refs/heads/main'
+        run: |
+          VERSION=${{ steps.version.outputs.image_tag }}
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "Tag $VERSION already exists"
+          else
+            git tag "$VERSION"
+            git push origin "$VERSION"
+          fi
